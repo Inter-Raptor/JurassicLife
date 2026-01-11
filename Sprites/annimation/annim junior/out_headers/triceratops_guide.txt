@@ -1,0 +1,72 @@
+=== Sprite Animations - Guide d'utilisation ===
+
+Header à inclure : triceratops_anims_90x90.h
+Personnage       : triceratops
+Namespace C++     : triceratops
+
+Taille d'une frame: 90 x 90 pixels
+Couleur KEY (RGB565) pour transparence : 0xF81F
+Trim mode         : none
+
+Constantes disponibles :
+ - triceratops::W   (largeur)
+ - triceratops::H   (hauteur)
+ - triceratops::KEY (couleur transparente)
+
+Animations disponibles :
+ - Junior amour : 3 frame(s)
+    enum id      : triceratops::ANIM_JUNIOR_AMOUR
+    frames table : triceratops::triceratops_junior_amour_frames  (pointeurs vers frames)
+    frame count  : triceratops::triceratops_junior_amour_count
+ - Junior Assie : 3 frame(s)
+    enum id      : triceratops::ANIM_JUNIOR_ASSIE
+    frames table : triceratops::triceratops_junior_assie_frames  (pointeurs vers frames)
+    frame count  : triceratops::triceratops_junior_assie_count
+ - Junior Cligne : 3 frame(s)
+    enum id      : triceratops::ANIM_JUNIOR_CLIGNE
+    frames table : triceratops::triceratops_junior_cligne_frames  (pointeurs vers frames)
+    frame count  : triceratops::triceratops_junior_cligne_count
+ - Junior dodo : 3 frame(s)
+    enum id      : triceratops::ANIM_JUNIOR_DODO
+    frames table : triceratops::triceratops_junior_dodo_frames  (pointeurs vers frames)
+    frame count  : triceratops::triceratops_junior_dodo_count
+ - Junior Mange : 3 frame(s)
+    enum id      : triceratops::ANIM_JUNIOR_MANGE
+    frames table : triceratops::triceratops_junior_mange_frames  (pointeurs vers frames)
+    frame count  : triceratops::triceratops_junior_mange_count
+ - Junior Marche : 3 frame(s)
+    enum id      : triceratops::ANIM_JUNIOR_MARCHE
+    frames table : triceratops::triceratops_junior_marche_frames  (pointeurs vers frames)
+    frame count  : triceratops::triceratops_junior_marche_count
+
+Lecture générique (table globale) :
+ - triceratops::ANIMS[animId].frames
+ - triceratops::ANIMS[animId].count
+
+Exemple minimal (LovyanGFX) :
+
+  #include "triceratops_anims_90x90.h"
+  // ... LGFX lcd;
+  
+  void drawAnimFrame(int x, int y, triceratops::AnimId anim, uint8_t frameIndex) {
+    // Récupère la description de l'anim
+    triceratops::AnimDesc ad;
+    memcpy_P(&ad, &triceratops::ANIMS[anim], sizeof(ad));
+
+    if (ad.count == 0) return;
+    frameIndex %= ad.count;
+
+    // Récupère le pointeur de frame
+    const uint16_t* framePtr;
+    memcpy_P(&framePtr, &ad.frames[frameIndex], sizeof(framePtr));
+
+    // Dessin (color-key)
+    // Note: pushImage n'a pas toujours le key, selon ta conf.
+    // Si tu utilises un Sprite LovyanGFX, tu peux dessiner pixel par pixel en sautant KEY.
+    lcd.pushImage(x, y, triceratops::W, triceratops::H, framePtr);
+  }
+
+Notes :
+ - Les frames sont stockées en PROGMEM (flash).
+ - Si tu veux une transparence parfaite (KEY), dessine en ignorant les pixels == KEY.
+ - Pour animer: incrémente frameIndex toutes les X ms (ex: 80-120ms).
