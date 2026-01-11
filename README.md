@@ -4,7 +4,24 @@ JurassicLife is a **Tamagotchi-style dinosaur pet game** built for the **ESP32-2
 Raise a dino from **Egg → Juvenile → Adult → Senior**, take care of its needs, and keep it healthy.
 
 > **Important:** This repository currently focuses on gameplay, visuals, and inputs.  
-> **No audio support is planned.** (There is no “optional audio” mode.)
+## Flasher le firmware (.bin)
+
+Un firmware précompilé est disponible dans le dossier `firmware/`.
+
+### Option 1 — Le plus simple (1 seul fichier)
+Le fichier `*_merged.bin` contient **bootloader + partitions + application**.  
+➡️ Il se flashe à l’offset **0x0**.
+
+> ⚠️ Attention : flasher le `merged.bin` **écrase la flash** (perte de données/paramètres éventuels).
+
+#### Avec esptool (Windows / Linux / macOS)
+1. Installe `esptool` (ou utilise `esptool.exe` si tu l’as déjà).
+2. Mets ta carte en USB et repère le port série (ex: `COM11`).
+
+Commande :
+```bash
+esptool --chip esp32 --port COM11 --baud 921600 write-flash 0x0 firmware/JurassicLife_vXX_ESP32_4MB_merged.bin
+
 
 ---
 
