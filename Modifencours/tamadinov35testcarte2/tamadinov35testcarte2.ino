@@ -531,6 +531,7 @@ static const int AUDIO_PWM_CHANNEL = 6;
 static const int AUDIO_PWM_BITS = 10;
 static const uint16_t AUDIO_DUTY_NORMAL = 320;
 static const uint16_t AUDIO_DUTY_QUIET  = 150;
+static uint8_t audioVolumePercent = 1; // 0-100 pour reduire le volume global
 
 struct AudioStep {
   uint16_t freq = 0;
@@ -563,6 +564,12 @@ static void audioWriteDuty(uint16_t duty) {
 #endif
 }
 
+static uint16_t audioDutyScaled(uint16_t duty) {
+  if (audioVolumePercent >= 100) return duty;
+  uint32_t scaled = (uint32_t)duty * (uint32_t)audioVolumePercent;
+  return (uint16_t)(scaled / 100U);
+}
+
 static AudioMode audioMode = AUDIO_TOTAL;
 static const AudioStep* audioSeq = nullptr;
 static uint8_t audioSeqLen = 0;
@@ -583,7 +590,7 @@ static void audioSetTone(uint16_t freq, uint16_t duty) {
     return;
   }
   audioWriteTone(freq);
-  audioWriteDuty(duty);
+  audioWriteDuty(audioDutyScaled(duty));
 }
 
 static void audioStop() {
