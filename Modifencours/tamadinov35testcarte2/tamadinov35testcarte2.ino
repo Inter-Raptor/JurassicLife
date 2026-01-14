@@ -614,8 +614,7 @@ static void audioStartSequence(const AudioStep* seq, uint8_t len, AudioPriority 
 }
 
 static void playRTTTLOnce(const char* rtttl, AudioPriority priority);
-struct Task;
-extern Task task;
+static void audioTickMusic(uint32_t now);
 
 static void audioUpdate(uint32_t now) {
   if (!audioActive) return;
@@ -803,93 +802,6 @@ static void audioTickAlerts(uint32_t now) {
     audioPlayRTTTLRepeat(RTTTL_ALERT_UNIT, count, AUDIO_PRIO_LOW);
   }
   audioNextAlertAt = now + interval;
-}
-
-static void audioTickMusic(uint32_t now) {
-  (void)now;
-  static bool initialized = false;
-  static GamePhase prevPhase = PHASE_EGG;
-  static TaskKind prevTaskKind = TASK_NONE;
-  static TaskPhase prevTaskPhase = PH_GO;
-  static bool prevTaskActive = false;
-  static AgeStage prevAgeStage = AGE_JUNIOR;
-
-  GamePhase curPhase = phase;
-  bool curTaskActive = task.active;
-  TaskKind curTaskKind = curTaskActive ? task.kind : TASK_NONE;
-  TaskPhase curTaskPhase = curTaskActive ? task.ph : PH_GO;
-  AgeStage curAgeStage = pet.stage;
-
-  if (!initialized) {
-    prevPhase = curPhase;
-    prevTaskKind = curTaskKind;
-    prevTaskPhase = curTaskPhase;
-    prevTaskActive = curTaskActive;
-    prevAgeStage = curAgeStage;
-    initialized = true;
-  } else {
-    if (prevPhase != curPhase) {
-      if (curPhase == PHASE_TOMB) {
-        playRTTTLOnce(RTTTL_DEATH_INTRO, AUDIO_PRIO_HIGH);
-      } else if (curPhase == PHASE_RESTREADY) {
-        playRTTTLOnce(RTTTL_RIP_INTRO, AUDIO_PRIO_HIGH);
-      }
-    }
-
-    if (prevAgeStage != curAgeStage) {
-      if (prevAgeStage == AGE_JUNIOR && curAgeStage == AGE_ADULTE) {
-        playRTTTLOnce(RTTTL_AGEUP_JUNIOR_TO_ADULT, AUDIO_PRIO_MED);
-      } else if (prevAgeStage == AGE_ADULTE && curAgeStage == AGE_SENIOR) {
-        playRTTTLOnce(RTTTL_AGEUP_ADULT_TO_SENIOR, AUDIO_PRIO_MED);
-      }
-    }
-
-    if (curTaskActive && curTaskPhase == PH_DO &&
-        (!prevTaskActive || prevTaskPhase != PH_DO || prevTaskKind != curTaskKind)) {
-      if (curTaskKind == TASK_EAT) {
-        playRTTTLOnce(RTTTL_EAT_INTRO, AUDIO_PRIO_MED);
-      } else if (curTaskKind == TASK_DRINK) {
-        playRTTTLOnce(RTTTL_DRINK_INTRO, AUDIO_PRIO_MED);
-      } else if (curTaskKind == TASK_POOP) {
-        playRTTTLOnce(RTTTL_POOP_INTRO, AUDIO_PRIO_HIGH);
-      } else if (curTaskKind == TASK_HUG) {
-        playRTTTLOnce(RTTTL_HUG_INTRO, AUDIO_PRIO_MED);
-      } else if (curTaskKind == TASK_SLEEP) {
-        playRTTTLOnce(RTTTL_SLEEP_INTRO, AUDIO_PRIO_MED);
-      }
-    }
-  }
-
-  const char* desiredLoop = nullptr;
-  AudioPriority desiredPriority = AUDIO_PRIO_LOW;
-  if (curPhase == PHASE_HATCHING) {
-    desiredLoop = RTTTL_HATCH_INTRO;
-    desiredPriority = AUDIO_PRIO_LOW;
-  } else if (curTaskActive && curTaskPhase == PH_DO) {
-    if (curTaskKind == TASK_EAT) {
-      desiredLoop = RTTTL_EAT_LOOP;
-      desiredPriority = AUDIO_PRIO_MED;
-    } else if (curTaskKind == TASK_DRINK) {
-      desiredLoop = RTTTL_DRINK_LOOP;
-      desiredPriority = AUDIO_PRIO_MED;
-    }
-  }
-
-  if (desiredLoop != audioLoopRtttl) {
-    if (desiredLoop == nullptr) {
-      if (audioLoopRtttl != nullptr) {
-        stopAudio();
-      }
-    } else {
-      playRTTTLLoop(desiredLoop, desiredPriority);
-    }
-  }
-
-  prevPhase = curPhase;
-  prevTaskKind = curTaskKind;
-  prevTaskPhase = curTaskPhase;
-  prevTaskActive = curTaskActive;
-  prevAgeStage = curAgeStage;
 }
 
 // nom
@@ -1339,6 +1251,93 @@ struct Task {
 
   uint32_t doMs = 0; // duree "sur place" pour manger/boire
 } task;
+
+static void audioTickMusic(uint32_t now) {
+  (void)now;
+  static bool initialized = false;
+  static GamePhase prevPhase = PHASE_EGG;
+  static TaskKind prevTaskKind = TASK_NONE;
+  static TaskPhase prevTaskPhase = PH_GO;
+  static bool prevTaskActive = false;
+  static AgeStage prevAgeStage = AGE_JUNIOR;
+
+  GamePhase curPhase = phase;
+  bool curTaskActive = task.active;
+  TaskKind curTaskKind = curTaskActive ? task.kind : TASK_NONE;
+  TaskPhase curTaskPhase = curTaskActive ? task.ph : PH_GO;
+  AgeStage curAgeStage = pet.stage;
+
+  if (!initialized) {
+    prevPhase = curPhase;
+    prevTaskKind = curTaskKind;
+    prevTaskPhase = curTaskPhase;
+    prevTaskActive = curTaskActive;
+    prevAgeStage = curAgeStage;
+    initialized = true;
+  } else {
+    if (prevPhase != curPhase) {
+      if (curPhase == PHASE_TOMB) {
+        playRTTTLOnce(RTTTL_DEATH_INTRO, AUDIO_PRIO_HIGH);
+      } else if (curPhase == PHASE_RESTREADY) {
+        playRTTTLOnce(RTTTL_RIP_INTRO, AUDIO_PRIO_HIGH);
+      }
+    }
+
+    if (prevAgeStage != curAgeStage) {
+      if (prevAgeStage == AGE_JUNIOR && curAgeStage == AGE_ADULTE) {
+        playRTTTLOnce(RTTTL_AGEUP_JUNIOR_TO_ADULT, AUDIO_PRIO_MED);
+      } else if (prevAgeStage == AGE_ADULTE && curAgeStage == AGE_SENIOR) {
+        playRTTTLOnce(RTTTL_AGEUP_ADULT_TO_SENIOR, AUDIO_PRIO_MED);
+      }
+    }
+
+    if (curTaskActive && curTaskPhase == PH_DO &&
+        (!prevTaskActive || prevTaskPhase != PH_DO || prevTaskKind != curTaskKind)) {
+      if (curTaskKind == TASK_EAT) {
+        playRTTTLOnce(RTTTL_EAT_INTRO, AUDIO_PRIO_MED);
+      } else if (curTaskKind == TASK_DRINK) {
+        playRTTTLOnce(RTTTL_DRINK_INTRO, AUDIO_PRIO_MED);
+      } else if (curTaskKind == TASK_POOP) {
+        playRTTTLOnce(RTTTL_POOP_INTRO, AUDIO_PRIO_HIGH);
+      } else if (curTaskKind == TASK_HUG) {
+        playRTTTLOnce(RTTTL_HUG_INTRO, AUDIO_PRIO_MED);
+      } else if (curTaskKind == TASK_SLEEP) {
+        playRTTTLOnce(RTTTL_SLEEP_INTRO, AUDIO_PRIO_MED);
+      }
+    }
+  }
+
+  const char* desiredLoop = nullptr;
+  AudioPriority desiredPriority = AUDIO_PRIO_LOW;
+  if (curPhase == PHASE_HATCHING) {
+    desiredLoop = RTTTL_HATCH_INTRO;
+    desiredPriority = AUDIO_PRIO_LOW;
+  } else if (curTaskActive && curTaskPhase == PH_DO) {
+    if (curTaskKind == TASK_EAT) {
+      desiredLoop = RTTTL_EAT_LOOP;
+      desiredPriority = AUDIO_PRIO_MED;
+    } else if (curTaskKind == TASK_DRINK) {
+      desiredLoop = RTTTL_DRINK_LOOP;
+      desiredPriority = AUDIO_PRIO_MED;
+    }
+  }
+
+  if (desiredLoop != audioLoopRtttl) {
+    if (desiredLoop == nullptr) {
+      if (audioLoopRtttl != nullptr) {
+        stopAudio();
+      }
+    } else {
+      playRTTTLLoop(desiredLoop, desiredPriority);
+    }
+  }
+
+  prevPhase = curPhase;
+  prevTaskKind = curTaskKind;
+  prevTaskPhase = curTaskPhase;
+  prevTaskActive = curTaskActive;
+  prevAgeStage = curAgeStage;
+}
 
 static uint32_t cdUntil[UI_COUNT] = {0};
 
