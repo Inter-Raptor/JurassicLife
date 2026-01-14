@@ -2634,9 +2634,13 @@ struct TouchDeb {
   uint32_t lastChange = 0;
   int16_t x = 0, y = 0;
   int8_t  lastBtn = -1;
+    int8_t  pressBtn = -1;
+  uint32_t pressStart = 0;
+  bool longPressFired = false;
 };
 static TouchDeb touch;
 static const uint32_t TOUCH_DEBOUNCE_MS = 25;
+static const uint32_t AUDIO_LONG_PRESS_MS = 650;
 
 static inline bool readTouchRaw(int16_t &x, int16_t &y) {
   return readTouchScreen(x, y);
@@ -2875,16 +2879,50 @@ int startX = (SW - totalW) / 2;
   }
 }
 
+if (pressedEdge) {
+  touch.pressBtn = touch.lastBtn;
+  touch.pressStart = now;
+  touch.longPressFired = false;
+}
+
+if (touch.stableDown) {
+  if (touch.lastBtn != touch.pressBtn) {
+    touch.pressBtn = touch.lastBtn;
+    touch.pressStart = now;
+    touch.longPressFired = false;
+  }
+
+  if (!touch.longPressFired && touch.lastBtn >= 0 && uiButtonCount() == uiAliveCount()) {
+    UiAction heldAction = uiAliveActionAt((uint8_t)touch.lastBtn);
+    if (heldAction == UI_AUDIO && (int32_t)(now - touch.pressStart) >= (int32_t)AUDIO_LONG_PRESS_MS) {
+      audioVolumePercent = (audioVolumePercent >= 10) ? 1 : 10;
+      char tmp[32];
+      snprintf(tmp, sizeof(tmp), "Volume %u%%", audioVolumePercent);
+      setMsg(tmp, now, 1500);
+      uiSpriteDirty = true;
+      uiForceBands  = true;
+      touch.longPressFired = true;
+    }
+  }
+}
+
 
   }
 
 if (releasedEdge) {
+  if (touch.longPressFired) {
+    touch.lastBtn = -1;
+    touch.pressBtn = -1;
+    touch.longPressFired = false;
+    return;
+  }
   if (touch.lastBtn == -10) { // MANGER
     if ((int32_t)(now - cdUntil[(int)UI_MANGER]) >= 0) {
       cdUntil[(int)UI_MANGER] = now + CD_EAT_MS;
       startTask(TASK_EAT, now);
     }
     touch.lastBtn = -1;
+    touch.pressBtn = -1;
     uiSpriteDirty = true; uiForceBands = true;
     return;
   }
@@ -2894,6 +2932,7 @@ if (releasedEdge) {
       startTask(TASK_DRINK, now);
     }
     touch.lastBtn = -1;
+        touch.pressBtn = -1;
     uiSpriteDirty = true; uiForceBands = true;
     return;
   }
@@ -2901,6 +2940,7 @@ if (releasedEdge) {
   if (touch.lastBtn >= 0) {
     uiPressAction(now);
     touch.lastBtn = -1;
+    touch.pressBtn = -1;
   }
 }
 
