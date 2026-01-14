@@ -614,6 +614,8 @@ static void audioStartSequence(const AudioStep* seq, uint8_t len, AudioPriority 
 }
 
 static void playRTTTLOnce(const char* rtttl, AudioPriority priority);
+struct Task;
+extern Task task;
 
 static void audioUpdate(uint32_t now) {
   if (!audioActive) return;
