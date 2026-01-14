@@ -114,6 +114,7 @@ struct TouchAffine {
 // ================== INCLUDES ==================
 #include <Arduino.h>
 #include <LovyanGFX.hpp>
+#include <ctype.h>
 #include <math.h>
 #include <string.h>
 
@@ -122,6 +123,7 @@ struct TouchAffine {
 #include <ArduinoJson.h>
 
 #include "DinoNames.h"
+#include "JurassicMusicRTTTL.h"
 
 // ================== ASSETS (namespaces rename) ==================
 #define triceratops triJ
@@ -570,7 +572,9 @@ static AudioPriority audioPriority = AUDIO_PRIO_LOW;
 static uint32_t audioNextAlertAt = 0;
 static bool audioActive = false;
 
-static AudioStep audioDynSeq[32];
+static AudioStep audioDynSeq[128];
+static const char* audioLoopRtttl = nullptr;
+static AudioPriority audioLoopPriority = AUDIO_PRIO_LOW;
 
 static void audioSetTone(uint16_t freq, uint16_t duty) {
   if (freq == 0 || duty == 0) {
@@ -592,6 +596,11 @@ static void audioStop() {
   audioSetTone(0, 0);
 }
 
+static void stopAudio() {
+  audioLoopRtttl = nullptr;
+  audioStop();
+}
+
 static void audioStartSequence(const AudioStep* seq, uint8_t len, AudioPriority priority) {
   if (audioMode == AUDIO_OFF || seq == nullptr || len == 0) return;
   if (audioActive && priority < audioPriority) return;
@@ -604,12 +613,19 @@ static void audioStartSequence(const AudioStep* seq, uint8_t len, AudioPriority 
   audioStepUntil = 0;
 }
 
+static void playRTTTLOnce(const char* rtttl, AudioPriority priority);
+
 static void audioUpdate(uint32_t now) {
   if (!audioActive) return;
   if (audioSeq == nullptr || audioSeqLen == 0) { audioStop(); return; }
 
   if (audioStepUntil == 0 || (int32_t)(now - audioStepUntil) >= 0) {
     if (audioSeqIndex >= audioSeqLen) {
+    if (audioLoopRtttl != nullptr) {
+        audioStop();
+        playRTTTLOnce(audioLoopRtttl, audioLoopPriority);
+        return;
+      }
       audioStop();
       return;
     }
@@ -617,6 +633,147 @@ static void audioUpdate(uint32_t now) {
     audioSetTone(step.freq, step.duty);
     audioStepUntil = now + step.durMs;
   }
+}
+
+static uint16_t rtttlNoteFrequency(char note, bool sharp, uint8_t octave) {
+  if (note == 'p') return 0;
+  int semitone = 0;
+  switch (note) {
+    case 'c': semitone = 0; break;
+    case 'd': semitone = 2; break;
+    case 'e': semitone = 4; break;
+    case 'f': semitone = 5; break;
+    case 'g': semitone = 7; break;
+    case 'a': semitone = 9; break;
+    case 'b': semitone = 11; break;
+    default: return 0;
+  }
+  if (sharp) semitone++;
+  int midi = ((int)octave + 1) * 12 + semitone;
+  float freq = 440.0f * powf(2.0f, ((float)midi - 69.0f) / 12.0f);
+  return (uint16_t)max(0.0f, freq);
+}
+
+static uint16_t rtttlParseNumber(const char*& p) {
+  uint16_t val = 0;
+  while (*p && isdigit(static_cast<unsigned char>(*p))) {
+    val = (uint16_t)(val * 10 + (*p - '0'));
+    p++;
+  }
+  return val;
+}
+
+static uint8_t rtttlBuildSequence(const char* rtttl, AudioStep* out, uint8_t maxSteps) {
+  if (rtttl == nullptr || out == nullptr || maxSteps == 0) return 0;
+
+  const char* p = strchr(rtttl, ':');
+  if (!p) return 0;
+  p++;
+
+  uint16_t defaultDur = 4;
+  uint8_t defaultOct = 6;
+  uint16_t bpm = 63;
+
+  const char* settingsEnd = strchr(p, ':');
+  if (!settingsEnd) return 0;
+
+  while (p < settingsEnd) {
+    if (*p == 'd' && *(p + 1) == '=') {
+      p += 2;
+      uint16_t v = rtttlParseNumber(p);
+      if (v > 0) defaultDur = v;
+    } else if (*p == 'o' && *(p + 1) == '=') {
+      p += 2;
+      uint16_t v = rtttlParseNumber(p);
+      if (v >= 3 && v <= 7) defaultOct = (uint8_t)v;
+    } else if (*p == 'b' && *(p + 1) == '=') {
+      p += 2;
+      uint16_t v = rtttlParseNumber(p);
+      if (v > 0) bpm = v;
+    }
+    while (p < settingsEnd && *p != ',') p++;
+    if (*p == ',') p++;
+  }
+
+  p = settingsEnd + 1;
+  if (bpm == 0) bpm = 63;
+  uint32_t wholeNoteMs = (uint32_t)((60000UL * 4UL) / bpm);
+
+  uint8_t outIndex = 0;
+  while (*p && outIndex < maxSteps) {
+    if (*p == ',') { p++; continue; }
+
+    uint16_t dur = 0;
+    if (isdigit(static_cast<unsigned char>(*p))) {
+      dur = rtttlParseNumber(p);
+    } else {
+      dur = defaultDur;
+    }
+    if (dur == 0) dur = defaultDur;
+
+    char note = (char)tolower(static_cast<unsigned char>(*p));
+    if (note == 0) break;
+    if (note < 'a' || note > 'g') {
+      if (note != 'p') {
+        while (*p && *p != ',') p++;
+        continue;
+      }
+    }
+    p++;
+
+    bool sharp = false;
+    if (*p == '#') { sharp = true; p++; }
+
+    bool dotted = false;
+    if (*p == '.') { dotted = true; p++; }
+
+    uint8_t octave = defaultOct;
+    if (isdigit(static_cast<unsigned char>(*p))) {
+      octave = (uint8_t)rtttlParseNumber(p);
+    }
+
+    if (*p == '.') { dotted = true; p++; }
+
+    uint32_t noteDur = wholeNoteMs / dur;
+    if (dotted) noteDur += noteDur / 2;
+
+    uint16_t freq = rtttlNoteFrequency(note, sharp, octave);
+    uint16_t duty = (note == 'p' || freq == 0) ? 0 : AUDIO_DUTY_NORMAL;
+    out[outIndex++] = {freq, (uint16_t)noteDur, duty};
+  }
+  return outIndex;
+}
+
+static void playRTTTLOnce(const char* rtttl, AudioPriority priority) {
+  uint8_t len = rtttlBuildSequence(rtttl, audioDynSeq, (uint8_t)(sizeof(audioDynSeq) / sizeof(audioDynSeq[0])));
+  audioStartSequence(audioDynSeq, len, priority);
+}
+
+static void playRTTTLLoop(const char* rtttl, AudioPriority priority) {
+  if (audioMode == AUDIO_OFF || rtttl == nullptr) return;
+  audioLoopRtttl = rtttl;
+  audioLoopPriority = priority;
+  if (!audioActive || priority >= audioPriority) {
+    playRTTTLOnce(rtttl, priority);
+  }
+}
+
+static void audioPlayRTTTLRepeat(const char* rtttl, uint8_t count, AudioPriority priority) {
+  if (count == 0) return;
+  if (count > 10) count = 10;
+
+  AudioStep unit[16];
+  uint8_t unitLen = rtttlBuildSequence(rtttl, unit, (uint8_t)(sizeof(unit) / sizeof(unit[0])));
+  if (unitLen == 0) return;
+
+  uint8_t idx = 0;
+  uint8_t maxSteps = (uint8_t)(sizeof(audioDynSeq) / sizeof(audioDynSeq[0]));
+  for (uint8_t i = 0; i < count && idx < maxSteps; i++) {
+    for (uint8_t j = 0; j < unitLen && idx < maxSteps; j++) {
+      audioDynSeq[idx++] = unit[j];
+    }
+  }
+  audioStartSequence(audioDynSeq, idx, priority);
 }
 
 static uint8_t healthCriticalCount() {
@@ -633,17 +790,6 @@ static uint8_t healthCriticalCount() {
   return count;
 }
 
-static void audioPlayBeepCount(uint8_t count, uint16_t freq, uint16_t onMs, uint16_t offMs, AudioPriority priority) {
-  if (count == 0) return;
-  if (count > 10) count = 10;
-  uint8_t idx = 0;
-  for (uint8_t i = 0; i < count && idx + 1 < (uint8_t)(sizeof(audioDynSeq) / sizeof(audioDynSeq[0])); i++) {
-    audioDynSeq[idx++] = {freq, onMs, AUDIO_DUTY_NORMAL};
-    if (i + 1 < count) audioDynSeq[idx++] = {0, offMs, 0};
-  }
-  audioStartSequence(audioDynSeq, idx, priority);
-}
-
 static void audioTickAlerts(uint32_t now) {
   if (audioMode == AUDIO_OFF) return;
   uint32_t interval = (audioMode == AUDIO_TOTAL) ? 10000UL : 20000UL;
@@ -652,72 +798,96 @@ static void audioTickAlerts(uint32_t now) {
 
   uint8_t count = healthCriticalCount();
   if (count > 0) {
-    audioPlayBeepCount(count, 2200, 120, 120, AUDIO_PRIO_LOW);
+    audioPlayRTTTLRepeat(RTTTL_ALERT_UNIT, count, AUDIO_PRIO_LOW);
   }
   audioNextAlertAt = now + interval;
 }
 
-static void audioPlayTinyClick() {
-  static const AudioStep seq[] = {
-    {2600, 50, AUDIO_DUTY_QUIET},
-  };
-  audioStartSequence(seq, (uint8_t)(sizeof(seq) / sizeof(seq[0])), AUDIO_PRIO_LOW);
-}
+static void audioTickMusic(uint32_t now) {
+  (void)now;
+  static bool initialized = false;
+  static GamePhase prevPhase = PHASE_EGG;
+  static TaskKind prevTaskKind = TASK_NONE;
+  static TaskPhase prevTaskPhase = PH_GO;
+  static bool prevTaskActive = false;
+  static AgeStage prevAgeStage = AGE_JUNIOR;
 
-static void audioPlayTinyClickAlt() {
-  static const AudioStep seq[] = {
-    {2400, 60, AUDIO_DUTY_QUIET},
-  };
-  audioStartSequence(seq, (uint8_t)(sizeof(seq) / sizeof(seq[0])), AUDIO_PRIO_LOW);
-}
+  GamePhase curPhase = phase;
+  bool curTaskActive = task.active;
+  TaskKind curTaskKind = curTaskActive ? task.kind : TASK_NONE;
+  TaskPhase curTaskPhase = curTaskActive ? task.ph : PH_GO;
+  AgeStage curAgeStage = pet.stage;
 
-static void audioPlayEat() {
-  static const AudioStep seq[] = {
-    {900, 90, AUDIO_DUTY_NORMAL},
-    {0, 50, 0},
-    {1100, 100, AUDIO_DUTY_NORMAL},
-  };
-  audioStartSequence(seq, (uint8_t)(sizeof(seq) / sizeof(seq[0])), AUDIO_PRIO_MED);
-}
+  if (!initialized) {
+    prevPhase = curPhase;
+    prevTaskKind = curTaskKind;
+    prevTaskPhase = curTaskPhase;
+    prevTaskActive = curTaskActive;
+    prevAgeStage = curAgeStage;
+    initialized = true;
+  } else {
+    if (prevPhase != curPhase) {
+      if (curPhase == PHASE_TOMB) {
+        playRTTTLOnce(RTTTL_DEATH_INTRO, AUDIO_PRIO_HIGH);
+      } else if (curPhase == PHASE_RESTREADY) {
+        playRTTTLOnce(RTTTL_RIP_INTRO, AUDIO_PRIO_HIGH);
+      }
+    }
 
-static void audioPlayDrink() {
-  static const AudioStep seq[] = {
-    {700, 80, AUDIO_DUTY_NORMAL},
-    {0, 60, 0},
-    {850, 90, AUDIO_DUTY_NORMAL},
-  };
-  audioStartSequence(seq, (uint8_t)(sizeof(seq) / sizeof(seq[0])), AUDIO_PRIO_MED);
-}
+    if (prevAgeStage != curAgeStage) {
+      if (prevAgeStage == AGE_JUNIOR && curAgeStage == AGE_ADULTE) {
+        playRTTTLOnce(RTTTL_AGEUP_JUNIOR_TO_ADULT, AUDIO_PRIO_MED);
+      } else if (prevAgeStage == AGE_ADULTE && curAgeStage == AGE_SENIOR) {
+        playRTTTLOnce(RTTTL_AGEUP_ADULT_TO_SENIOR, AUDIO_PRIO_MED);
+      }
+    }
 
-static void audioPlayPoop() {
-  static const AudioStep seq[] = {
-    {180, 700, AUDIO_DUTY_QUIET},
-  };
-  audioStartSequence(seq, (uint8_t)(sizeof(seq) / sizeof(seq[0])), AUDIO_PRIO_HIGH);
-}
+    if (curTaskActive && curTaskPhase == PH_DO &&
+        (!prevTaskActive || prevTaskPhase != PH_DO || prevTaskKind != curTaskKind)) {
+      if (curTaskKind == TASK_EAT) {
+        playRTTTLOnce(RTTTL_EAT_INTRO, AUDIO_PRIO_MED);
+      } else if (curTaskKind == TASK_DRINK) {
+        playRTTTLOnce(RTTTL_DRINK_INTRO, AUDIO_PRIO_MED);
+      } else if (curTaskKind == TASK_POOP) {
+        playRTTTLOnce(RTTTL_POOP_INTRO, AUDIO_PRIO_HIGH);
+      } else if (curTaskKind == TASK_HUG) {
+        playRTTTLOnce(RTTTL_HUG_INTRO, AUDIO_PRIO_MED);
+      } else if (curTaskKind == TASK_SLEEP) {
+        playRTTTLOnce(RTTTL_SLEEP_INTRO, AUDIO_PRIO_MED);
+      }
+    }
+  }
 
-static void audioPlayHug() {
-  static const AudioStep seq[] = {
-    {660, 140, AUDIO_DUTY_QUIET},
-    {0, 60, 0},
-    {880, 160, AUDIO_DUTY_QUIET},
-    {0, 60, 0},
-    {990, 160, AUDIO_DUTY_QUIET},
-  };
-  audioStartSequence(seq, (uint8_t)(sizeof(seq) / sizeof(seq[0])), AUDIO_PRIO_MED);
-}
+  const char* desiredLoop = nullptr;
+  AudioPriority desiredPriority = AUDIO_PRIO_LOW;
+  if (curPhase == PHASE_HATCHING) {
+    desiredLoop = RTTTL_HATCH_INTRO;
+    desiredPriority = AUDIO_PRIO_LOW;
+  } else if (curTaskActive && curTaskPhase == PH_DO) {
+    if (curTaskKind == TASK_EAT) {
+      desiredLoop = RTTTL_EAT_LOOP;
+      desiredPriority = AUDIO_PRIO_MED;
+    } else if (curTaskKind == TASK_DRINK) {
+      desiredLoop = RTTTL_DRINK_LOOP;
+      desiredPriority = AUDIO_PRIO_MED;
+    }
+  }
 
-static void audioPlaySleepLullaby() {
-  static const AudioStep seq[] = {
-    {523, 320, AUDIO_DUTY_QUIET},
-    {0, 120, 0},
-    {440, 320, AUDIO_DUTY_QUIET},
-    {0, 120, 0},
-    {392, 320, AUDIO_DUTY_QUIET},
-    {0, 180, 0},
-    {440, 420, AUDIO_DUTY_QUIET},
-  };
-  audioStartSequence(seq, (uint8_t)(sizeof(seq) / sizeof(seq[0])), AUDIO_PRIO_MED);
+  if (desiredLoop != audioLoopRtttl) {
+    if (desiredLoop == nullptr) {
+      if (audioLoopRtttl != nullptr) {
+        stopAudio();
+      }
+    } else {
+      playRTTTLLoop(desiredLoop, desiredPriority);
+    }
+  }
+
+  prevPhase = curPhase;
+  prevTaskKind = curTaskKind;
+  prevTaskPhase = curTaskPhase;
+  prevTaskActive = curTaskActive;
+  prevAgeStage = curAgeStage;
 }
 
 // nom
@@ -2108,7 +2278,6 @@ static bool startTask(TaskKind k, uint32_t now) {
 
     task.ph = PH_DO;
     enterState(ST_SLEEP, now);
-    audioPlaySleepLullaby();
   }
   else {
     task.targetX = worldX;
@@ -2122,10 +2291,8 @@ static bool startTask(TaskKind k, uint32_t now) {
 
     if (k == TASK_POOP) {
       activityStartTask(now, "Fait caca...", task.plannedTotal);
-      audioPlayPoop();
     } else if (k == TASK_HUG) {
       activityStartTask(now, "Fait un calin...", task.plannedTotal);
-      audioPlayHug();
     }
 
     enterState(ST_SIT, now);
@@ -2176,7 +2343,6 @@ static void updateTask(uint32_t now) {
           activityShowProgress(now, "Mange...", task.doMs);
           enterState(ST_EAT, now);
           task.doUntil = now + task.doMs;
-          audioPlayEat();
           return;
         }
         else if (task.kind == TASK_DRINK) {
@@ -2189,7 +2355,6 @@ static void updateTask(uint32_t now) {
           activityShowProgress(now, "Boit...", task.doMs);
           enterState(ST_EAT, now);
           task.doUntil = now + task.doMs;
-          audioPlayDrink();
           return;
         }
 
@@ -2602,7 +2767,7 @@ if (nbtn != uiAliveCount()) return;
       else audioMode = AUDIO_TOTAL;
 
       if (audioMode == AUDIO_OFF) {
-        audioStop();
+        stopAudio();
         setMsg("Audio coupe", now, 1500);
       } else if (audioMode == AUDIO_LIMITED) {
         audioNextAlertAt = now + 20000UL;
@@ -2864,7 +3029,7 @@ if ((int32_t)(now - mgNextDropAt) >= 0) {
           ry >= (float)DINO_Y_HIT && ry <= (float)(DINO_Y_HIT + DINO_HIT_H)) {
         mgRain[i].active = false;
         mgDropsHit++;
-        audioPlayTinyClickAlt();
+        playRTTTLOnce(RTTTL_RAIN_HIT_SFX, AUDIO_PRIO_LOW);
       }
     }
 
@@ -2937,7 +3102,7 @@ if ((int32_t)(now - mgNextDropAt) >= 0) {
           by + r >= (float)dinoTop && by - r <= (float)(dinoTop + DINO_H)) {
         mgBalloons[i].active = false;
         mgBalloonsCaught++;
-        audioPlayTinyClick();
+        playRTTTLOnce(RTTTL_BALLOON_CATCH_SFX, AUDIO_PRIO_LOW);
       }
     }
 
@@ -3374,6 +3539,8 @@ if (ENC_BTN >= 0) raw = (digitalRead(ENC_BTN) == LOW);
 
   // idle
   if (!task.active && phase == PHASE_ALIVE) idleUpdate(now);
+
+  audioTickMusic(now);
 
   // barre activité: si juste message, elle disparaît
   if (!task.active && activityVisible && (int32_t)(now - activityEnd) >= 0) {
