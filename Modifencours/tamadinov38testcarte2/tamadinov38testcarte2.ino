@@ -1,6 +1,46 @@
 // tamadinov4.ino - ESP32 WROOM + CYD 2432S028 (ILI9341) + LovyanGFX
 #include <stdint.h>
 
+// ================== CONFIG RAPIDE (à modifier en premier) ==================
+// --- Choix carte/écran ---
+#define DISPLAY_PROFILE_2432S022 1   // ST7789 + cap touch I2C
+#define DISPLAY_PROFILE_2432S028 2   // ILI9341 + XPT2046 (soft-SPI)
+#define DISPLAY_PROFILE_ILI9341_320x240 3 // ILI9341 320x240 + XPT2046 (soft-SPI)
+
+// >>> Réglage simple : modifier la carte ici <<<
+#define DISPLAY_PROFILE DISPLAY_PROFILE_2432S028   // DISPLAY_PROFILE_2432S022   ou   DISPLAY_PROFILE_2432S028   ou   DISPLAY_PROFILE_ILI9341_320x240
+
+// >>> Audio : 1 = ON, 0 = OFF <<<
+#define ENABLE_AUDIO 0
+
+// >>> Calibration tactile XPT2046 : 1 = ON, 0 = OFF <<<
+#define ENABLE_TOUCH_CALIBRATION 1
+
+// --- Options entrée (2432S028 / ILI9341 uniquement - pas assez de pins sur 2432S022) ---
+// Encoder rotatif cliquable (A/B + bouton), ou 3 boutons (gauche/droite/OK).
+// Laisser à -1 pour désactiver.
+static const int ENC_A   = -1;
+static const int ENC_B   = -1;
+static const int ENC_BTN = -1;
+
+static const int BTN_LEFT  = -1;
+static const int BTN_RIGHT = -1;
+static const int BTN_OK    = -1;
+
+// --- Pins utilisés (référence rapide) ---
+// 2432S022 (ST7789 + cap touch I2C)
+//   LCD parallèle 8-bit: WR=4, RD=2, RS=16, D0=15, D1=13, D2=12, D3=14, D4=27, D5=25, D6=33, D7=32
+//   LCD CS=17, RST=-1, BL=0 (PWM)
+//   Touch I2C: SDA=21, SCL=22
+// 2432S028 (ILI9341 + XPT2046)
+//   LCD SPI: SCLK=14, MOSI=13, MISO=12, DC=2, CS=15, BL=21
+//   Touch XPT2046 (soft-SPI): CLK=25, MOSI=32, MISO=39, CS=33, IRQ=36
+// ILI9341_320x240 (TFT classique + XPT2046)
+//   LCD SPI: SCLK=14, MOSI=13, MISO=12, DC=2, CS=15, BL=21
+//   Touch XPT2046 (soft-SPI): CLK=25, MOSI=32, MISO=39, CS=33, IRQ=36
+// Entrées (optionnelles): encoder = ENC_A/ENC_B/ENC_BTN, boutons = BTN_LEFT/BTN_RIGHT/BTN_OK
+// SD (toutes cartes): SCK=18, MISO=19, MOSI=23, CS=5
+
 // ================== ENUMS (Arduino prototype fix) ==================
 enum AgeStage : uint8_t { AGE_JUNIOR, AGE_ADULTE, AGE_SENIOR };
 
@@ -169,17 +209,6 @@ struct TouchAffine {
 #endif
 
 // ================== CONFIG ==================
-// --- Choix carte/écran ---
-#define DISPLAY_PROFILE_2432S022 1   // ST7789 + cap touch I2C
-#define DISPLAY_PROFILE_2432S028 2   // ILI9341 + XPT2046 (soft-SPI)
-#define DISPLAY_PROFILE_ILI9341_320x240 3 // ILI9341 320x240 + XPT2046 (soft-SPI)
-
-// >>> Réglage simple : choisir la carte ici <<<
-#define DISPLAY_PROFILE DISPLAY_PROFILE_2432S022   // DISPLAY_PROFILE_2432S022   ou   DISPLAY_PROFILE_2432S028   ou   DISPLAY_PROFILE_ILI9341_320x240 
-
-// --- Options globales ---
-#define ENABLE_AUDIO 1
-
 // Affichage boutons type "tamadinov30test" (Manger/Boire en bas) ou boutons rapides en haut
 #define USE_TOP_QUICK_BUTTONS (DISPLAY_PROFILE == DISPLAY_PROFILE_2432S022)
 
@@ -570,29 +599,283 @@ static TouchSample readTouchOnce() {
   return s;
 }
 
-static inline uint16_t mapTouchAxis(uint16_t v, uint16_t inMin, uint16_t inMax, uint16_t outMax) {
-  if (v < inMin) v = inMin;
-  if (v > inMax) v = inMax;
-  uint32_t num = (uint32_t)(v - inMin) * (uint32_t)outMax;
-  uint16_t denom = (inMax > inMin) ? (uint16_t)(inMax - inMin) : (uint16_t)1;
-  return (uint16_t)(num / denom);
+// ================== TACTILE (XPT2046 SOFT-SPI + CALIB AFFINE) ==================
+static TouchAffine touchCal = { 0,0,0, 0,0,0, false, false };
+static const char* TOUCH_CAL_FILE = "/touch_affine.json";
+
+static uint16_t medianSmall(uint16_t* a, int n) {
+  for (int i = 1; i < n; i++) {
+    uint16_t k = a[i]; int j = i - 1;
+    while (j >= 0 && a[j] > k) { a[j + 1] = a[j]; j--; }
+    a[j + 1] = k;
+  }
+  return a[n / 2];
 }
 
-// Ajuster ces bornes si besoin (calibration rapide)
-static constexpr uint16_t TOUCH_X_MIN = 250;
-static constexpr uint16_t TOUCH_X_MAX = 3800;
-static constexpr uint16_t TOUCH_Y_MIN = 250;
-static constexpr uint16_t TOUCH_Y_MAX = 3800;
+static TouchSample readTouchFiltered() {
+  const int N = 9;
+  uint16_t xs[N], ys[N], zs[N];
+  int k = 0;
+  for (int i = 0; i < N; i++) {
+    TouchSample s = readTouchOnce();
+    if (!s.valid) { delay(2); continue; }
+    xs[k] = s.x; ys[k] = s.y; zs[k] = s.z; k++;
+    delay(2);
+  }
+  TouchSample out{};
+  if (k < 5) { out.valid = false; return out; }
+  out.x = medianSmall(xs, k);
+  out.y = medianSmall(ys, k);
+  uint16_t zmax = 0; for (int i = 0; i < k; i++) if (zs[i] > zmax) zmax = zs[i];
+  out.z = zmax;
+  out.valid = true;
+  return out;
+}
 
+static bool waitPressStable(TouchSample &out, uint32_t timeoutMs = 25000) {
+  uint32_t t0 = millis();
+  while (millis() - t0 < timeoutMs) {
+    TouchSample a = readTouchFiltered();
+    if (!a.valid) { delay(10); continue; }
+    delay(40);
+    TouchSample b = readTouchFiltered();
+    delay(40);
+    TouchSample c = readTouchFiltered();
+    if (!b.valid || !c.valid) { delay(10); continue; }
+    int dx1 = abs((int)a.x - (int)b.x), dy1 = abs((int)a.y - (int)b.y);
+    int dx2 = abs((int)b.x - (int)c.x), dy2 = abs((int)b.y - (int)c.y);
+    if (dx1 < 45 && dy1 < 45 && dx2 < 45 && dy2 < 45) { out = c; return true; }
+    delay(10);
+  }
+  return false;
+}
+
+static void waitRelease(uint32_t timeoutMs = 8000) {
+  uint32_t t0 = millis();
+  while (millis() - t0 < timeoutMs) {
+    if (!readTouchOnce().valid) return;
+    delay(15);
+  }
+}
+
+// ---- Solve 3x3 (Gaussian) ----
+static bool solve3x3(float A[3][3], float B[3], float X[3]) {
+  float M[3][4];
+  for (int r = 0; r < 3; r++) {
+    for (int c = 0; c < 3; c++) M[r][c] = A[r][c];
+    M[r][3] = B[r];
+  }
+
+  for (int i = 0; i < 3; i++) {
+    int piv = i;
+    float best = fabsf(M[i][i]);
+    for (int r = i + 1; r < 3; r++) {
+      float v = fabsf(M[r][i]);
+      if (v > best) { best = v; piv = r; }
+    }
+    if (best < 1e-6f) return false;
+    if (piv != i) {
+      for (int c = i; c < 4; c++) { float tmp = M[i][c]; M[i][c] = M[piv][c]; M[piv][c] = tmp; }
+    }
+
+    float div = M[i][i];
+    for (int c = i; c < 4; c++) M[i][c] /= div;
+
+    for (int r = 0; r < 3; r++) {
+      if (r == i) continue;
+      float f = M[r][i];
+      for (int c = i; c < 4; c++) M[r][c] -= f * M[i][c];
+    }
+  }
+  X[0] = M[0][3]; X[1] = M[1][3]; X[2] = M[2][3];
+  return true;
+}
+
+static bool fitAffineLSQ(const TouchSample* raw, const int* S, int n, float &a, float &b, float &c) {
+  float XtX[3][3] = {{0,0,0},{0,0,0},{0,0,0}};
+  float XtY[3] = {0,0,0};
+
+  for (int i = 0; i < n; i++) {
+    float x = (float)raw[i].x;
+    float y = (float)raw[i].y;
+    float yy = (float)S[i];
+    float v[3] = {x, y, 1.0f};
+    for (int r = 0; r < 3; r++) {
+      for (int cc = 0; cc < 3; cc++) {
+        XtX[r][cc] += v[r] * v[cc];
+      }
+      XtY[r] += v[r] * yy;
+    }
+  }
+
+  float p[3];
+  if (!solve3x3(XtX, XtY, p)) return false;
+  a = p[0]; b = p[1]; c = p[2];
+  return true;
+}
+
+static bool rawToScreenAffine(const TouchSample& r, int &sx, int &sy) {
+  if (!touchCal.ok || !r.valid) return false;
+  float fx = touchCal.a * (float)r.x + touchCal.b * (float)r.y + touchCal.c;
+  float fy = touchCal.d * (float)r.x + touchCal.e * (float)r.y + touchCal.f;
+  int W = tft.width(), H = tft.height();
+  int ix = (int)lroundf(fx), iy = (int)lroundf(fy);
+  if (ix < 0) ix = 0; if (ix > W - 1) ix = W - 1;
+  if (iy < 0) iy = 0; if (iy > H - 1) iy = H - 1;
+  sx = ix; sy = iy;
+  return true;
+}
+
+static void touchBanner(const char* s) {
+  tft.fillRect(0, 0, tft.width(), 22, 0x0000);
+  tft.setTextSize(1);
+  tft.setTextColor(0xFFFF, 0x0000);
+  tft.setCursor(6, 6);
+  tft.print(s);
+}
+
+static void touchCross(int x, int y, uint16_t col) {
+  tft.drawLine(x - 14, y, x + 14, y, col);
+  tft.drawLine(x, y - 14, x, y + 14, col);
+  tft.drawRect(x - 18, y - 18, 36, 36, col);
+}
+
+static bool touchLoadFromSD() {
+  touchCal.ok = false;
+  touchCal.skipped = false;
+
+  if (!sdReady) return false;
+  if (!SD.exists(TOUCH_CAL_FILE)) return false;
+
+  File f = SD.open(TOUCH_CAL_FILE, FILE_READ);
+  if (!f) return false;
+
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, f);
+  f.close();
+  if (err) return false;
+
+  if ((doc["ver"] | 0) != 1) return false;
+
+  touchCal.skipped = (doc["skip"] | 0) ? true : false;
+
+  if (!touchCal.skipped) {
+    touchCal.a = doc["a"] | 0.0f;
+    touchCal.b = doc["b"] | 0.0f;
+    touchCal.c = doc["c"] | 0.0f;
+    touchCal.d = doc["d"] | 0.0f;
+    touchCal.e = doc["e"] | 0.0f;
+    touchCal.f = doc["f"] | 0.0f;
+    touchCal.ok = (doc["ok"] | 0) ? true : false;
+  } else {
+    touchCal.a = touchCal.b = touchCal.c = 0.0f;
+    touchCal.d = touchCal.e = touchCal.f = 0.0f;
+    touchCal.ok = false;
+  }
+
+  return (touchCal.ok || touchCal.skipped);
+}
+
+static bool touchSaveToSD() {
+  if (!sdReady) return false;
+
+  touchCal.skipped = false;
+
+  StaticJsonDocument<256> doc;
+  doc["ver"] = 1;
+  doc["ok"]  = touchCal.ok ? 1 : 0;
+  doc["skip"] = 0;
+  doc["a"] = touchCal.a; doc["b"] = touchCal.b; doc["c"] = touchCal.c;
+  doc["d"] = touchCal.d; doc["e"] = touchCal.e; doc["f"] = touchCal.f;
+
+  const char* TMP = "/touch_affine.tmp";
+  if (SD.exists(TMP)) SD.remove(TMP);
+  File f = SD.open(TMP, FILE_WRITE);
+  if (!f) return false;
+  if (serializeJson(doc, f) == 0) { f.close(); SD.remove(TMP); return false; }
+  f.flush(); f.close();
+
+  if (SD.exists(TOUCH_CAL_FILE)) SD.remove(TOUCH_CAL_FILE);
+  if (!SD.rename(TMP, TOUCH_CAL_FILE)) { SD.remove(TMP); return false; }
+  return true;
+}
+
+static bool touchSaveSkipToSD() {
+  if (!sdReady) return false;
+
+  touchCal.ok = false;
+  touchCal.skipped = true;
+
+  StaticJsonDocument<128> doc;
+  doc["ver"] = 1;
+  doc["ok"]  = 0;
+  doc["skip"] = 1;
+
+  const char* TMP = "/touch_affine.tmp";
+  if (SD.exists(TMP)) SD.remove(TMP);
+  File f = SD.open(TMP, FILE_WRITE);
+  if (!f) return false;
+  if (serializeJson(doc, f) == 0) { f.close(); SD.remove(TMP); return false; }
+  f.flush(); f.close();
+
+  if (SD.exists(TOUCH_CAL_FILE)) SD.remove(TOUCH_CAL_FILE);
+  if (!SD.rename(TMP, TOUCH_CAL_FILE)) { SD.remove(TMP); return false; }
+  return true;
+}
+
+static bool touchRunCalibrationWizard() {
+  int W = tft.width(), H = tft.height();
+  const int M = 28;
+
+  const int TLx = M,     TLy = M;
+  const int TRx = W - M, TRy = M;
+  const int BRx = W - M, BRy = H - M;
+  const int BLx = M,     BLy = H - M;
+
+  TouchSample Praw[4]{};
+  int Sx[4] = {TLx, TRx, BRx, BLx};
+  int Sy[4] = {TLy, TRy, BRy, BLy};
+
+  tft.fillScreen(0x0000);
+  touchBanner("Calibration tactile (1/4) : HAUT GAUCHE");
+  touchCross(TLx, TLy, 0xFFFF);
+  if (!waitPressStable(Praw[0])) return false; waitRelease();
+
+  tft.fillScreen(0x0000);
+  touchBanner("Calibration tactile (2/4) : HAUT DROIT");
+  touchCross(TRx, TRy, 0xFFFF);
+  if (!waitPressStable(Praw[1])) return false; waitRelease();
+
+  tft.fillScreen(0x0000);
+  touchBanner("Calibration tactile (3/4) : BAS DROIT");
+  touchCross(BRx, BRy, 0xFFFF);
+  if (!waitPressStable(Praw[2])) return false; waitRelease();
+
+  tft.fillScreen(0x0000);
+  touchBanner("Calibration tactile (4/4) : BAS GAUCHE");
+  touchCross(BLx, BLy, 0xFFFF);
+  if (!waitPressStable(Praw[3])) return false; waitRelease();
+
+  bool okX = fitAffineLSQ(Praw, Sx, 4, touchCal.a, touchCal.b, touchCal.c);
+  bool okY = fitAffineLSQ(Praw, Sy, 4, touchCal.d, touchCal.e, touchCal.f);
+  touchCal.ok = okX && okY;
+
+  if (touchCal.ok) touchSaveToSD();
+
+  tft.fillScreen(0x0000);
+  touchBanner(touchCal.ok ? "OK - demarrage du jeu..." : "ECHEC calib - demarrage");
+  delay(600);
+
+  return touchCal.ok;
+}
+
+// Lecture tactile "prête UI"
 static inline bool readTouchScreen(int16_t &sx, int16_t &sy) {
-  TouchSample r = readTouchOnce();
+  if (touchCal.skipped) return false;
+  TouchSample r = readTouchFiltered();
   if (!r.valid) return false;
-
-  uint16_t rawX = mapTouchAxis(r.x, TOUCH_X_MIN, TOUCH_X_MAX, (uint16_t)(RAW_W - 1));
-  uint16_t rawY = mapTouchAxis(r.y, TOUCH_Y_MIN, TOUCH_Y_MAX, (uint16_t)(RAW_H - 1));
-
-  uint16_t x, y;
-  mapTouchToScreen(rawX, rawY, x, y);
+  int x, y;
+  if (!rawToScreenAffine(r, x, y)) return false;
   sx = (int16_t)x;
   sy = (int16_t)y;
   return true;
@@ -600,10 +883,16 @@ static inline bool readTouchScreen(int16_t &sx, int16_t &sy) {
 #endif
 
 
-// ================== ENCODEUR ==================
-static const int ENC_A   = -1;
-static const int ENC_B   = -1;
-static const int ENC_BTN = -1;
+// ================== ENCODEUR / BOUTONS ==================
+
+static inline bool encoderEnabled() { return (ENC_A >= 0 && ENC_B >= 0); }
+static inline bool encoderButtonEnabled() { return (ENC_BTN >= 0); }
+static inline bool buttonsEnabled() { return (BTN_LEFT >= 0 || BTN_RIGHT >= 0 || BTN_OK >= 0); }
+
+static inline bool readButtonRaw(int pin) {
+  if (pin < 0) return false;
+  return digitalRead(pin) == LOW;
+}
 
 volatile int32_t encPos = 0;
 volatile uint8_t lastAB = 0;
@@ -628,6 +917,57 @@ static const uint32_t BTN_DEBOUNCE_MS = 25;
 static inline bool readBtnPressedRaw() {
   if (ENC_BTN < 0) return false;
   return digitalRead(ENC_BTN) == LOW;
+}
+
+struct ButtonDeb {
+  bool raw = false;
+  bool stable = false;
+  bool lastStable = false;
+  uint32_t changeAt = 0;
+};
+static ButtonDeb btnLeftDeb;
+static ButtonDeb btnRightDeb;
+static ButtonDeb btnOkDeb;
+
+static bool btnLeftEdge = false;
+static bool btnRightEdge = false;
+static bool btnOkEdge = false;
+static bool btnLeftHeld = false;
+static bool btnRightHeld = false;
+static bool btnOkHeld = false;
+
+static inline void updateButtonDeb(ButtonDeb &b, bool raw, uint32_t now) {
+  if (raw != b.raw) {
+    b.raw = raw;
+    b.changeAt = now;
+  }
+  if ((now - b.changeAt) > BTN_DEBOUNCE_MS) {
+    b.stable = b.raw;
+  }
+}
+
+static inline bool consumePressedEdge(ButtonDeb &b) {
+  bool edge = (b.stable && !b.lastStable);
+  b.lastStable = b.stable;
+  return edge;
+}
+
+static void updateButtons(uint32_t now) {
+  btnLeftEdge = btnRightEdge = btnOkEdge = false;
+  btnLeftHeld = btnRightHeld = btnOkHeld = false;
+  if (!buttonsEnabled()) return;
+
+  updateButtonDeb(btnLeftDeb, readButtonRaw(BTN_LEFT), now);
+  updateButtonDeb(btnRightDeb, readButtonRaw(BTN_RIGHT), now);
+  updateButtonDeb(btnOkDeb, readButtonRaw(BTN_OK), now);
+
+  btnLeftEdge = consumePressedEdge(btnLeftDeb);
+  btnRightEdge = consumePressedEdge(btnRightDeb);
+  btnOkEdge = consumePressedEdge(btnOkDeb);
+
+  btnLeftHeld = btnLeftDeb.stable;
+  btnRightHeld = btnRightDeb.stable;
+  btnOkHeld = btnOkDeb.stable;
 }
 
 static const int ENC_DIV = 4;
@@ -2835,6 +3175,7 @@ static inline bool readTouchRaw(int16_t &x, int16_t &y) {
 
 // ================== Input UI ==================
 static void handleEncoderUI(uint32_t now) {
+  if (!encoderEnabled()) return;
   int32_t p;
   noInterrupts(); p = encPos; interrupts();
   int32_t det = detentFromEnc(p);
@@ -2861,6 +3202,31 @@ static void handleEncoderUI(uint32_t now) {
   if (!pressedEdge) return;
 
   uiPressAction(now);
+}
+
+static void handleButtonsUI(uint32_t now) {
+  if (!buttonsEnabled()) return;
+  uint8_t nbtn = uiButtonCount();
+
+  if (btnLeftEdge) {
+    int s = (int)uiSel - 1;
+    if (s < 0) s = (int)nbtn - 1;
+    uiSel = (uint8_t)s;
+    uiSpriteDirty = true;
+    uiForceBands  = true;
+  }
+
+  if (btnRightEdge) {
+    int s = (int)uiSel + 1;
+    if (s >= (int)nbtn) s = 0;
+    uiSel = (uint8_t)s;
+    uiSpriteDirty = true;
+    uiForceBands  = true;
+  }
+
+  if (btnOkEdge) {
+    uiPressAction(now);
+  }
 }
 
 // --- Action commune (encodeur + tactile) ---
@@ -3226,6 +3592,9 @@ static bool mgUpdate(uint32_t now) {
       mgCloudX += (float)dd * 6.0f;
       mgLastDetent = det;
     }
+
+    if (btnLeftHeld) mgCloudX -= 4.0f;
+    if (btnRightHeld) mgCloudX += 4.0f;
 
     mgCloudX += mgCloudV;
     float cloudHalf = (float)(CLOUD_W / 2);
@@ -3595,10 +3964,83 @@ softSPIBeginTouch();
 SW = tft.width();
 SH = tft.height();
 
-  // ---- Touch (soft-SPI) ----
+  if (encoderEnabled()) {
+    pinMode(ENC_A, INPUT_PULLUP);
+    pinMode(ENC_B, INPUT_PULLUP);
+  }
+  if (encoderButtonEnabled()) pinMode(ENC_BTN, INPUT_PULLUP);
+  if (BTN_LEFT >= 0) pinMode(BTN_LEFT, INPUT_PULLUP);
+  if (BTN_RIGHT >= 0) pinMode(BTN_RIGHT, INPUT_PULLUP);
+  if (BTN_OK >= 0) pinMode(BTN_OK, INPUT_PULLUP);
 
+#if DISPLAY_PROFILE != DISPLAY_PROFILE_2432S022
+#if ENABLE_TOUCH_CALIBRATION
+  bool touchReady = touchLoadFromSD();
+  if (!touchReady) {
+    bool canSkip = encoderButtonEnabled() || (BTN_OK >= 0);
+    const int COUNTDOWN_SEC = 9;
+    bool wantSkip = false;
+    bool lastRaw = false;
 
-if (ENC_BTN >= 0) pinMode(ENC_BTN, INPUT);
+    if (canSkip) {
+      for (int sec = COUNTDOWN_SEC; sec >= 1 && !wantSkip; --sec) {
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+        tft.setTextSize(2);
+        tft.setCursor(10, 18);
+        tft.print("Sans tactile ?");
+
+        tft.setTextSize(1);
+        tft.setCursor(10, 55);
+        tft.print("Appuie sur OK/encodeur");
+        tft.setCursor(10, 68);
+        tft.print("pour desactiver le tactile.");
+
+        tft.setTextSize(2);
+        tft.setCursor(10, 102);
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Calib dans: %d", sec);
+        tft.print(buf);
+
+        uint32_t t0 = millis();
+        while ((uint32_t)(millis() - t0) < 1000UL) {
+          bool raw = readButtonRaw(ENC_BTN) || readButtonRaw(BTN_OK);
+          if (raw && !lastRaw) {
+            delay(20);
+            if (readButtonRaw(ENC_BTN) || readButtonRaw(BTN_OK)) { wantSkip = true; break; }
+          }
+          lastRaw = raw;
+          delay(10);
+        }
+      }
+    }
+
+    if (wantSkip) {
+      touchSaveSkipToSD();
+      touchReady = touchLoadFromSD();
+
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.setTextSize(2);
+      tft.setCursor(10, 60);
+      tft.print("Tactile desactive");
+      delay(1200);
+    } else {
+      if (!touchRunCalibrationWizard()) {
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_RED);
+        tft.setTextSize(2);
+        tft.setCursor(10, 10);
+        tft.print("Touch calib FAIL");
+        while (true) delay(1000);
+      }
+      touchReady = touchLoadFromSD();
+    }
+  }
+  (void)touchReady;
+#endif
+#endif
 
 
 
@@ -3616,7 +4058,11 @@ if (ENC_BTN >= 0) pinMode(ENC_BTN, INPUT);
   camX   = worldX - (float)(SW / 2);
   camX = clampf(camX, 0.0f, worldW - (float)SW);
 
-// Encodeur désactivé
+  if (encoderEnabled()) {
+    lastAB = readAB();
+    attachInterrupt(digitalPinToInterrupt(ENC_A), isrEnc, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(ENC_B), isrEnc, CHANGE);
+  }
 
   noInterrupts();
   int32_t p0 = encPos;
@@ -3688,6 +4134,8 @@ void loop() {
   audioTickAlerts(now);
   audioUpdate(now);
 
+  updateButtons(now);
+
   // ================== MINI-JEUX (prioritaires) ==================
   if (appMode != MODE_PET) {
     // debounce bouton encodeur (séparé du UI)
@@ -3704,7 +4152,7 @@ if (ENC_BTN >= 0) raw = (digitalRead(ENC_BTN) == LOW);
     static bool mgLastStable = false;
     bool pressedEdge = (mgStable && !mgLastStable);
     mgLastStable = mgStable;
-    if (pressedEdge && appMode == MODE_MG_PLAY) {
+    if ((pressedEdge || btnOkEdge) && appMode == MODE_MG_PLAY) {
       mgJumpRequested = true;
     }
 
@@ -3794,7 +4242,8 @@ if (ENC_BTN >= 0) raw = (digitalRead(ENC_BTN) == LOW);
 
   // INPUT : tactile + encodeur
   handleTouchUI(now);
- // handleEncoderUI(now);
+  handleEncoderUI(now);
+  handleButtonsUI(now);
 
   // tick stats
     if (phase == PHASE_ALIVE) {
