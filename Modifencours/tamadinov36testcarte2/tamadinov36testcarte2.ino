@@ -124,6 +124,7 @@ struct TouchAffine {
 
 #include "DinoNames.h"
 #include "JurassicMusicRTTTL.h"
+#include "pageaccueil_320x218.h"
 
 // ================== ASSETS (namespaces rename) ==================
 #define triceratops triJ
@@ -168,6 +169,25 @@ struct TouchAffine {
 #endif
 
 // ================== CONFIG ==================
+// --- Choix carte/écran ---
+#define DISPLAY_PROFILE_2432S022 1   // ST7789 + cap touch I2C
+#define DISPLAY_PROFILE_2432S028 2   // ILI9341 + XPT2046 (soft-SPI)
+#define DISPLAY_PROFILE_ILI9341_320x240 3 // ILI9341 320x240 + XPT2046 (soft-SPI)
+
+// >>> Réglage simple : choisir la carte ici <<<
+#define DISPLAY_PROFILE DISPLAY_PROFILE_2432S022
+
+// --- Options globales ---
+#define ENABLE_AUDIO 1
+
+// Affichage boutons type "tamadinov30test" (Manger/Boire en bas) ou boutons rapides en haut
+#define USE_TOP_QUICK_BUTTONS (DISPLAY_PROFILE == DISPLAY_PROFILE_2432S022)
+
+// Rotation écran (0..3). Pour un retournement 180°, ajouter 2 (ex: 1 -> 3).
+static constexpr int ROT = 3;
+static constexpr bool FLIP_X = true;
+static constexpr bool FLIP_Y = true;
+
 static const int   SIM_SPEED = 1;
 
 
@@ -306,13 +326,10 @@ static const uint16_t KEY_SWAP = 0x1FF8;
 #define FLAQUE_H   flaque_eau_60x25_H
 #define FLAQUE_IMG flaque_eau_60x25
 
-// ================== ÉCRAN (ESP32-2432S022 ST7789 PARALLEL) ==================
+// ================== ÉCRAN ==================
+#if DISPLAY_PROFILE == DISPLAY_PROFILE_2432S022
 #include <Wire.h>
 #include <bb_captouch.h>
-
-static constexpr int ROT = 1;           // VALIDÉ chez toi
-static constexpr bool FLIP_X = true;    // VALIDÉ chez toi (droite<->gauche)
-static constexpr bool FLIP_Y = true;    // VALIDÉ chez toi (haut<->bas)
 
 static constexpr int TOUCH_SDA = 21;
 static constexpr int TOUCH_SCL = 22;
@@ -392,6 +409,66 @@ static TOUCHINFO  g_ti;
 static constexpr int RAW_W = 240;
 static constexpr int RAW_H = 320;
 
+#else
+// --- ILI9341 SPI (2432S028 ou TFT classique 320x240) ---
+static constexpr int TOUCH_IRQ  = 36; // input-only
+static constexpr int TOUCH_MOSI = 32;
+static constexpr int TOUCH_MISO = 39;
+static constexpr int TOUCH_CLK  = 25;
+static constexpr int TOUCH_CS   = 33;
+
+class LGFX : public lgfx::LGFX_Device {
+  lgfx::Panel_ILI9341 _panel;
+  lgfx::Bus_SPI _bus;
+public:
+  LGFX() {
+    { auto cfg = _bus.config();
+      cfg.spi_host   = VSPI_HOST;
+      cfg.spi_mode   = 0;
+      cfg.freq_write = 20000000;
+      cfg.freq_read  = 16000000;
+      cfg.pin_sclk   = 14;
+      cfg.pin_mosi   = 13;
+      cfg.pin_miso   = 12;
+      cfg.pin_dc     = 2;
+      _bus.config(cfg);
+      _panel.setBus(&_bus);
+    }
+    { auto cfg = _panel.config();
+      cfg.pin_cs   = 15;
+      cfg.pin_rst  = -1;
+      cfg.pin_busy = -1;
+#if DISPLAY_PROFILE == DISPLAY_PROFILE_ILI9341_320x240
+      cfg.panel_width  = 320;
+      cfg.panel_height = 240;
+#else
+      cfg.panel_width  = 240;
+      cfg.panel_height = 320;
+#endif
+      cfg.offset_x = 0;
+      cfg.offset_y = 0;
+      cfg.invert     = false;
+      cfg.rgb_order  = false;
+      cfg.dlen_16bit = false;
+      cfg.bus_shared = true;
+      _panel.config(cfg);
+    }
+    setPanel(&_panel);
+  }
+};
+
+LGFX tft;
+static const int PIN_BL = 21;
+
+#if DISPLAY_PROFILE == DISPLAY_PROFILE_ILI9341_320x240
+static constexpr int RAW_W = 320;
+static constexpr int RAW_H = 240;
+#else
+static constexpr int RAW_W = 240;
+static constexpr int RAW_H = 320;
+#endif
+#endif
+
 static inline uint16_t clampU16(int v, int lo, int hi) {
   if (v < lo) return (uint16_t)lo;
   if (v > hi) return (uint16_t)hi;
@@ -415,7 +492,7 @@ static inline void mapTouchToScreen(uint16_t rx, uint16_t ry, uint16_t &x, uint1
   uint16_t xx = clampU16(sx, 0, w - 1);
   uint16_t yy = clampU16(sy, 0, h - 1);
 
-  // flips ensuite (VALIDÉS)
+  // flips ensuite
   if (FLIP_X) xx = (uint16_t)((w - 1) - xx);
   if (FLIP_Y) yy = (uint16_t)((h - 1) - yy);
 
@@ -423,7 +500,8 @@ static inline void mapTouchToScreen(uint16_t rx, uint16_t ry, uint16_t &x, uint1
   y = yy;
 }
 
-// Lecture tactile "prête UI" (même signature que ton code)
+#if DISPLAY_PROFILE == DISPLAY_PROFILE_2432S022
+// Lecture tactile "prête UI" (cap touch)
 static inline bool readTouchScreen(int16_t &sx, int16_t &sy) {
   int n = g_touch.getSamples(&g_ti);
   if (n > 0 && g_ti.count > 0) {
@@ -435,6 +513,91 @@ static inline bool readTouchScreen(int16_t &sx, int16_t &sy) {
   }
   return false;
 }
+#else
+// --- Touch XPT2046 (soft-SPI + mapping simple) ---
+static inline void spiDelayTouch() { /* petit délai si besoin */ }
+
+static inline void softSPIBeginTouch() {
+  pinMode(TOUCH_CS, OUTPUT);
+  digitalWrite(TOUCH_CS, HIGH);
+  pinMode(TOUCH_CLK, OUTPUT);
+  digitalWrite(TOUCH_CLK, HIGH);
+  pinMode(TOUCH_MOSI, OUTPUT);
+  digitalWrite(TOUCH_MOSI, LOW);
+  pinMode(TOUCH_MISO, INPUT);
+  pinMode(TOUCH_IRQ, INPUT);
+}
+
+static inline uint16_t xptRead12_soft(uint8_t cmd) {
+  digitalWrite(TOUCH_CS, LOW);
+  spiDelayTouch();
+
+  for (int i = 7; i >= 0; --i) {
+    digitalWrite(TOUCH_CLK, LOW);
+    digitalWrite(TOUCH_MOSI, (cmd >> i) & 1);
+    spiDelayTouch();
+    digitalWrite(TOUCH_CLK, HIGH);
+    spiDelayTouch();
+  }
+
+  uint16_t v = 0;
+  for (int i = 15; i >= 0; --i) {
+    digitalWrite(TOUCH_CLK, LOW);
+    spiDelayTouch();
+    digitalWrite(TOUCH_CLK, HIGH);
+    v = (uint16_t)((v << 1) | (uint16_t)(digitalRead(TOUCH_MISO) & 1));
+    spiDelayTouch();
+  }
+
+  digitalWrite(TOUCH_CS, HIGH);
+  v >>= 4;
+  return v & 0x0FFF;
+}
+
+static TouchSample readTouchOnce() {
+  TouchSample s{};
+  uint16_t ry = xptRead12_soft(0x90);
+  uint16_t rx = xptRead12_soft(0xD0);
+  uint16_t z1 = xptRead12_soft(0xB0);
+  uint16_t z2 = xptRead12_soft(0xC0);
+
+  int z = (int)z1 + (4095 - (int)z2);
+  if (z < 0) z = 0;
+  if (z > 4095) z = 4095;
+
+  s.x = rx; s.y = ry; s.z = (uint16_t)z;
+  s.valid = (s.z > 2400) && (s.x > 10) && (s.y > 10);
+  return s;
+}
+
+static inline uint16_t mapTouchAxis(uint16_t v, uint16_t inMin, uint16_t inMax, uint16_t outMax) {
+  if (v < inMin) v = inMin;
+  if (v > inMax) v = inMax;
+  uint32_t num = (uint32_t)(v - inMin) * (uint32_t)outMax;
+  uint16_t denom = (inMax > inMin) ? (uint16_t)(inMax - inMin) : (uint16_t)1;
+  return (uint16_t)(num / denom);
+}
+
+// Ajuster ces bornes si besoin (calibration rapide)
+static constexpr uint16_t TOUCH_X_MIN = 250;
+static constexpr uint16_t TOUCH_X_MAX = 3800;
+static constexpr uint16_t TOUCH_Y_MIN = 250;
+static constexpr uint16_t TOUCH_Y_MAX = 3800;
+
+static inline bool readTouchScreen(int16_t &sx, int16_t &sy) {
+  TouchSample r = readTouchOnce();
+  if (!r.valid) return false;
+
+  uint16_t rawX = mapTouchAxis(r.x, TOUCH_X_MIN, TOUCH_X_MAX, (uint16_t)(RAW_W - 1));
+  uint16_t rawY = mapTouchAxis(r.y, TOUCH_Y_MIN, TOUCH_Y_MAX, (uint16_t)(RAW_H - 1));
+
+  uint16_t x, y;
+  mapTouchToScreen(rawX, rawY, x, y);
+  sx = (int16_t)x;
+  sy = (int16_t)y;
+  return true;
+}
+#endif
 
 
 // ================== ENCODEUR ==================
@@ -570,7 +733,11 @@ static uint16_t audioDutyScaled(uint16_t duty) {
   return (uint16_t)(scaled / 100U);
 }
 
+#if ENABLE_AUDIO
 static AudioMode audioMode = AUDIO_TOTAL;
+#else
+static AudioMode audioMode = AUDIO_OFF;
+#endif
 static const AudioStep* audioSeq = nullptr;
 static uint8_t audioSeqLen = 0;
 static uint8_t audioSeqIndex = 0;
@@ -886,9 +1053,21 @@ static void drawAudioIcon(LGFX_Sprite& g, int x, int y, int w, int h, uint16_t c
 }
 // ===== Ordre des boutons (barre du bas) =====
 // Change juste l'ordre ici pour déplacer Manger/Boire où tu veux :
+#if USE_TOP_QUICK_BUTTONS
 static const UiAction UI_ORDER_ALIVE[] = {
-  UI_REPOS, UI_LAVER, UI_JOUER, UI_CACA, UI_CALIN, UI_AUDIO
+  UI_REPOS, UI_LAVER, UI_JOUER, UI_CACA, UI_CALIN
+#if ENABLE_AUDIO
+  , UI_AUDIO
+#endif
 };
+#else
+static const UiAction UI_ORDER_ALIVE[] = {
+  UI_REPOS, UI_MANGER, UI_BOIRE, UI_LAVER, UI_JOUER, UI_CACA, UI_CALIN
+#if ENABLE_AUDIO
+  , UI_AUDIO
+#endif
+};
+#endif
 
 static inline uint8_t uiAliveCount() {
   return (uint8_t)(sizeof(UI_ORDER_ALIVE) / sizeof(UI_ORDER_ALIVE[0]));
@@ -1300,15 +1479,7 @@ static void audioTickMusic(uint32_t now) {
 
     if (curTaskActive && curTaskPhase == PH_DO &&
         (!prevTaskActive || prevTaskPhase != PH_DO || prevTaskKind != curTaskKind)) {
-      if (curTaskKind == TASK_EAT) {
-        playRTTTLOnce(RTTTL_EAT_INTRO, AUDIO_PRIO_MED);
-      } else if (curTaskKind == TASK_DRINK) {
-        playRTTTLOnce(RTTTL_DRINK_INTRO, AUDIO_PRIO_MED);
-      } else if (curTaskKind == TASK_POOP) {
-        playRTTTLOnce(RTTTL_POOP_INTRO, AUDIO_PRIO_HIGH);
-      } else if (curTaskKind == TASK_HUG) {
-        playRTTTLOnce(RTTTL_HUG_INTRO, AUDIO_PRIO_MED);
-      } else if (curTaskKind == TASK_SLEEP) {
+      if (curTaskKind == TASK_SLEEP) {
         playRTTTLOnce(RTTTL_SLEEP_INTRO, AUDIO_PRIO_MED);
       }
     }
@@ -1319,14 +1490,6 @@ static void audioTickMusic(uint32_t now) {
   if (curPhase == PHASE_HATCHING) {
     desiredLoop = RTTTL_HATCH_INTRO;
     desiredPriority = AUDIO_PRIO_LOW;
-  } else if (curTaskActive && curTaskPhase == PH_DO) {
-    if (curTaskKind == TASK_EAT) {
-      desiredLoop = RTTTL_EAT_LOOP;
-      desiredPriority = AUDIO_PRIO_MED;
-    } else if (curTaskKind == TASK_DRINK) {
-      desiredLoop = RTTTL_DRINK_LOOP;
-      desiredPriority = AUDIO_PRIO_MED;
-    }
   }
 
   if (desiredLoop != audioLoopRtttl) {
@@ -1547,6 +1710,13 @@ static bool loadLatestSave(uint32_t now) {
   pet.caca    = (float)iClamp(ps["caca"]    | 0,  0, 100);
   pet.sante   = (float)iClamp(ps["sante"]   | 80, 0, 100);
 
+#if ENABLE_AUDIO
+  audioMode = (AudioMode)iClamp(doc["audioMode"] | (int)AUDIO_TOTAL, (int)AUDIO_OFF, (int)AUDIO_TOTAL);
+  audioVolumePercent = (uint8_t)iClamp(doc["audioVol"] | (int)audioVolumePercent, 1, 100);
+#else
+  audioMode = AUDIO_OFF;
+#endif
+
   if (!pet.vivant || pet.sante <= 0.0f) {
     pet.vivant = false;
     phase = PHASE_TOMB;
@@ -1573,6 +1743,11 @@ static bool writeSlotFile(const char* tmpPath, const char* finalPath, const char
   doc["evolveProgressMin"] = (uint32_t)pet.evolveProgressMin;
   doc["vivant"] = pet.vivant;
   doc["name"] = petName;
+
+#if ENABLE_AUDIO
+  doc["audioMode"] = (int)audioMode;
+  doc["audioVol"] = (int)audioVolumePercent;
+#endif
 
   JsonObject ps = doc.createNestedObject("pet");
   ps["faim"]    = fToI100(pet.faim);
@@ -1798,6 +1973,7 @@ const int TOP_BTN_PAD = 8;
     // si une action est en cours -> on affiche la barre
     float p = activityProgress(now);
     drawActivityBar(uiTop, SW/2, TOP_BTN_Y, 140, TOP_BTN_H, p, activityText);
+#if USE_TOP_QUICK_BUTTONS
   } else if (canTopBtns) {
     // sinon -> 2 gros boutons Manger/Boire sous les barres
     auto drawTopBtn = [&](int x, const char* lab, uint16_t baseCol, bool disabled) {
@@ -1830,6 +2006,7 @@ const int TOP_BTN_PAD = 8;
 
     drawTopBtn(xL, "Manger", btnColorForAction(UI_MANGER), cdEat);
     drawTopBtn(xR, "Boire",  btnColorForAction(UI_BOIRE),  cdDrink);
+#endif
   }
 
 
@@ -2406,6 +2583,16 @@ static void updateTask(uint32_t now) {
         puddleRespawnAt = now + 2000;
       }
 
+      if (task.kind == TASK_EAT) {
+        playRTTTLOnce(RTTTL_EAT_INTRO, AUDIO_PRIO_MED);
+      } else if (task.kind == TASK_DRINK) {
+        playRTTTLOnce(RTTTL_DRINK_INTRO, AUDIO_PRIO_MED);
+      } else if (task.kind == TASK_POOP) {
+        playRTTTLOnce(RTTTL_POOP_INTRO, AUDIO_PRIO_HIGH);
+      } else if (task.kind == TASK_HUG) {
+        playRTTTLOnce(RTTTL_HUG_INTRO, AUDIO_PRIO_MED);
+      }
+
       applyTaskEffects(task.kind, now);
 
       task.ph = PH_RETURN;
@@ -2716,6 +2903,7 @@ static void uiPressAction(uint32_t now) {
     activityText[0] = 0;
 
     enterState(ST_SIT, now);
+    playRTTTLOnce(RTTTL_SLEEP_INTRO, AUDIO_PRIO_MED);
     setMsg("Reveille !", now, 1500);
     uiSpriteDirty = true; uiForceBands = true;
     return;
@@ -2788,6 +2976,9 @@ if (nbtn != uiAliveCount()) return;
         audioNextAlertAt = now + 10000UL;
         setMsg("Audio total", now, 1500);
       }
+#if ENABLE_AUDIO
+      if (sdReady) saveNow(now, "audio");
+#endif
       break;
     }
 
@@ -2832,10 +3023,12 @@ const int TOP_BTN_Y = 77;
 const int TOP_BTN_W = 120;
 const int TOP_BTN_H = 18;
 const int TOP_BTN_PAD = 8;
+const int TOP_BTN_TOUCH_PAD = TOP_BTN_H; // zone tactile agrandie
 
 bool canTopBtns = (phase == PHASE_ALIVE) && (appMode == MODE_PET) && (!task.active) && (state != ST_SLEEP) && (!activityVisible);
 
-if (canTopBtns && ty >= TOP_BTN_Y && ty < (TOP_BTN_Y + TOP_BTN_H)) {
+#if USE_TOP_QUICK_BUTTONS
+if (canTopBtns && ty >= (TOP_BTN_Y - TOP_BTN_TOUCH_PAD) && ty < (TOP_BTN_Y + TOP_BTN_H + TOP_BTN_TOUCH_PAD)) {
   int xL0 = TOP_BTN_PAD;
   int xL1 = xL0 + TOP_BTN_W;
   int xR1 = SW - TOP_BTN_PAD;
@@ -2845,9 +3038,10 @@ if (canTopBtns && ty >= TOP_BTN_Y && ty < (TOP_BTN_Y + TOP_BTN_H)) {
   else if (tx >= xR0 && tx < xR1) { touch.lastBtn = -11; } // Boire
   else { touch.lastBtn = -1; }
 }
+#endif
 
   if (touch.lastBtn != -10 && touch.lastBtn != -11) {
-  const int TOUCH_PAD_Y = 10;
+  const int TOUCH_PAD_Y = UI_BOT_H; // zone tactile agrandie (haut+bas)
   if (ty >= (SH - UI_BOT_H - TOUCH_PAD_Y) && ty < (SH + TOUCH_PAD_Y)) {
     uint8_t nbtn = uiButtonCount();
 
@@ -2901,6 +3095,7 @@ if (touch.stableDown) {
       setMsg(tmp, now, 1500);
       uiSpriteDirty = true;
       uiForceBands  = true;
+      if (sdReady) saveNow(now, "audio_vol");
       touch.longPressFired = true;
     }
   }
@@ -3351,6 +3546,28 @@ static void resetToEgg(uint32_t now) {
   audioNextAlertAt = 0;
 }
 
+static void showHomeIntro(uint32_t now) {
+  tft.fillScreen(TFT_BLACK);
+
+  int imgW = (int)pageaccueil_W;
+  int imgH = (int)pageaccueil_H;
+  int x = (SW - imgW) / 2;
+  int y = (SH - imgH) / 2;
+  tft.pushImage(x, y, imgW, imgH, pageaccueil);
+
+#if ENABLE_AUDIO
+  if (audioMode != AUDIO_OFF) {
+    playRTTTLOnce(RTTTL_HOME_INTRO, AUDIO_PRIO_MED);
+  }
+#endif
+
+  uint32_t endAt = now + 3000;
+  while ((int32_t)(millis() - endAt) < 0) {
+    audioUpdate(millis());
+    delay(10);
+  }
+}
+
 // ================== SETUP/LOOP ==================
 void setup() {
   Serial.begin(115200);
@@ -3364,10 +3581,16 @@ void setup() {
 
 tft.init();
 tft.setRotation(ROT);
+#if DISPLAY_PROFILE == DISPLAY_PROFILE_2432S022
 Wire.begin(TOUCH_SDA, TOUCH_SCL);
 Wire.setClock(400000);
 g_touch.init(TOUCH_SDA, TOUCH_SCL, -1, -1);
 tft.setBrightness(255);
+#else
+pinMode(PIN_BL, OUTPUT);
+digitalWrite(PIN_BL, HIGH);
+softSPIBeginTouch();
+#endif
 
 SW = tft.width();
 SH = tft.height();
@@ -3435,6 +3658,8 @@ if (ENC_BTN >= 0) pinMode(ENC_BTN, INPUT);
     resetToEgg(now);
     if (sdReady) saveNow(now, "boot_new");
   }
+
+  showHomeIntro(now);
 
   lastPetTick = now;
 
@@ -3621,7 +3846,7 @@ if (ENC_BTN >= 0) raw = (digitalRead(ENC_BTN) == LOW);
 
     bool forceFace = false;
     bool faceRight = false;
-    if (task.active && task.kind == TASK_HUG) {
+    if (task.active && task.kind == TASK_HUG && task.ph == PH_DO) {
       if (pet.stage == AGE_JUNIOR) animId = (uint8_t)triJ::ANIM_JUNIOR_AMOUR;
       else if (pet.stage == AGE_ADULTE) animId = (uint8_t)triA::ANIM_ADULTE_AMOUR;
       else animId = (uint8_t)triS::ANIM_SENIOR_AMOUR;
