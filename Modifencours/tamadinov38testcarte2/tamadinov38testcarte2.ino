@@ -19,9 +19,9 @@
 // --- Options entrée (2432S028 / ILI9341 uniquement - pas assez de pins sur 2432S022) ---
 // Encoder rotatif cliquable (A/B + bouton), ou 3 boutons (gauche/droite/OK).
 // Laisser à -1 pour désactiver.
-static const int ENC_A   = -1;
-static const int ENC_B   = -1;
-static const int ENC_BTN = -1;
+static const int ENC_A   = 22;   //22
+static const int ENC_B   = 27;   //27
+static const int ENC_BTN = 35;   //35 ou-1
 
 static const int BTN_LEFT  = -1;
 static const int BTN_RIGHT = -1;
@@ -150,6 +150,9 @@ struct TouchAffine {
   bool ok;
   bool skipped; // true si l'utilisateur a choisi de passer la calibration
 };
+
+struct ButtonDeb;
+extern bool sdReady;
 
 // ================== INCLUDES ==================
 #include <Arduino.h>
@@ -1913,7 +1916,7 @@ static const int SD_CS   = 5;
 
 // Bus SD séparé (HSPI) pour éviter conflit avec l'écran (VSPI pins custom)
 static SPIClass sdSPI(HSPI);
-static bool sdReady = false;
+bool sdReady = false;
 
 static const char* SAVE_A  = "/saveA.json";
 static const char* SAVE_B  = "/saveB.json";
@@ -3975,7 +3978,7 @@ SH = tft.height();
 
 #if DISPLAY_PROFILE != DISPLAY_PROFILE_2432S022
 #if ENABLE_TOUCH_CALIBRATION
-  bool touchReady = touchLoadFromSD();
+  bool touchReady = sdReady ? touchLoadFromSD() : false;
   if (!touchReady) {
     bool canSkip = encoderButtonEnabled() || (BTN_OK >= 0);
     const int COUNTDOWN_SEC = 9;
@@ -4017,8 +4020,14 @@ SH = tft.height();
     }
 
     if (wantSkip) {
-      touchSaveSkipToSD();
-      touchReady = touchLoadFromSD();
+      if (sdReady) {
+        touchSaveSkipToSD();
+        touchReady = touchLoadFromSD();
+      } else {
+        touchCal.ok = false;
+        touchCal.skipped = true;
+        touchReady = true;
+      }
 
       tft.fillScreen(TFT_BLACK);
       tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -4035,7 +4044,11 @@ SH = tft.height();
         tft.print("Touch calib FAIL");
         while (true) delay(1000);
       }
-      touchReady = touchLoadFromSD();
+      if (sdReady) {
+        touchReady = touchLoadFromSD();
+      } else {
+        touchReady = touchCal.ok;
+      }
     }
   }
   (void)touchReady;
