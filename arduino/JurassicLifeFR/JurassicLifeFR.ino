@@ -1334,6 +1334,11 @@ static uint8_t healthCriticalCount() {
   return count;
 }
 
+static inline bool criticalBlinkOn(uint32_t now) {
+  if (healthCriticalCount() == 0) return false;
+  return ((now / 500UL) % 2U) == 0U;
+}
+
 static void audioTickAlerts(uint32_t now) {
   if (audioMode == AUDIO_OFF) return;
   uint32_t interval = (audioMode == AUDIO_TOTAL) ? 10000UL : 20000UL;
@@ -1554,7 +1559,7 @@ static inline float gainMulForStage(AgeStage s) {
 
 static inline float fatigueFactor() {
   float f = clamp01f(pet.fatigue);
-  return 1.0f + (1.0f - (f / 100.0f)) * 5.0f;
+  return 1.0f + (1.0f - (f / 100.0f)) * 2.0f; //vitesse de ralentisement si fatiguer!
 }
 static inline uint32_t scaleByFatigueAndAge(uint32_t baseMs) {
   float k = fatigueFactor();
@@ -2178,6 +2183,7 @@ static void rebuildUISprites(uint32_t now) {
 
   char line[96];
   bool showStatusLine = false;
+  uint16_t statusColor = criticalBlinkOn(now) ? TFT_RED : TFT_WHITE;
 if (phase == PHASE_EGG || phase == PHASE_HATCHING) {
 
   // ⚠️ Astuce: si ton écran/typo gère mal "œ" et "…",
@@ -2231,7 +2237,7 @@ if (phase == PHASE_EGG || phase == PHASE_HATCHING) {
     uiTop.setCursor(11, 65);  uiTop.print(l5);
     uiTop.setCursor(11, 79);  uiTop.print(l6);
 
-    uiTop.setTextColor(TFT_WHITE, KEY);
+    uiTop.setTextColor(statusColor, KEY);
     uiTop.setCursor(10,  8);  uiTop.print(l1);
     uiTop.setCursor(10, 22);  uiTop.print(l2);
     uiTop.setCursor(10, 36);  uiTop.print(l3);
@@ -2274,7 +2280,7 @@ if (phase == PHASE_EGG || phase == PHASE_HATCHING) {
 
   if (showStatusLine) {
     uiTop.setTextSize(1);
-    uiTextShadow(uiTop, 6, 2, line, TFT_WHITE, KEY);
+    uiTextShadow(uiTop, 6, 2, line, statusColor, KEY);
   }
 
   int nameW = 0;
@@ -4318,6 +4324,16 @@ if (ENC_BTN >= 0) raw = (digitalRead(ENC_BTN) == LOW);
     }
   } else {
     lastActivityUiRefresh = 0;
+  }
+
+  static bool lastCritical = false;
+  static bool lastBlinkOn = false;
+  bool critical = healthCriticalCount() > 0;
+  bool blinkOn = critical && ((now / 500UL) % 2U) == 0U;
+  if (critical != lastCritical || blinkOn != lastBlinkOn) {
+    uiSpriteDirty = true;
+    lastCritical = critical;
+    lastBlinkOn = blinkOn;
   }
 
   // rebuild UI
