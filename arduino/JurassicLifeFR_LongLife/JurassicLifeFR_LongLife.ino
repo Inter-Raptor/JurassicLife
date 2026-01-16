@@ -272,7 +272,7 @@ static int JUMP_V0_MIN = 2;
 static int JUMP_V0_MAX = 4;
 static const float GRAVITY = 0.5f;
 
-// évolution  base 80% pendant 80min pour augmenter d'age!
+// évolution 85% pendant plus longtemps pour augmenter d'age
 static const int EVOLVE_THR = 85;
 static const int EVOLVE_JUNIOR_TO_ADULT_MIN = 1200;
 static const int EVOLVE_ADULT_TO_SENIOR_MIN = 1200;
@@ -288,17 +288,20 @@ static const float GAIN_MUL_ADULTE = 1.15f;
 static const float GAIN_MUL_SENIOR = 1.10f;
 
 // tick réveillé (par minute)
-static const float AWAKE_HUNGER_D  = -2.0f;
-static const float AWAKE_THIRST_D  = -3.0f;
-static const float AWAKE_HYGIENE_D = -1.0f;
-static const float AWAKE_MOOD_D    = -1.0f;
-static const float AWAKE_ENERGY_D  = -2.0f;
-static const float AWAKE_FATIGUE_D = -2.0f;
-static const float AWAKE_LOVE_D    = -0.5f;
+static const float AWAKE_HUNGER_D  = -2.0f / 25.0f;
+static const float AWAKE_THIRST_D  = -3.0f / 25.0f;
+static const float AWAKE_HYGIENE_D = -1.0f / 18.0f;
+static const float AWAKE_MOOD_D    = -1.0f / 18.0f;
+static const float AWAKE_ENERGY_D  = -2.0f / 18.0f;
+static const float AWAKE_FATIGUE_D = -2.0f / 18.0f;
+static const float AWAKE_LOVE_D    = -0.5f / 18.0f;
+
+// multiplicateur global de baisse de santé (1.0 = inchangé)
+static const float HEALTH_TICK_MULT = 0.01f;
 
 // caca
-static const float AWAKE_POOP_D    = +1.0f;
-static const float SLEEP_POOP_D    = +0.5f;
+static const float AWAKE_POOP_D    = +1.0f / 18.0f;
+static const float SLEEP_POOP_D    = +0.5f / 18.0f;
 static const int   POOP_STRESS_THR = 80;
 
 // durées base actions (toujours utiles pour balancing même si wash/play passent en mini-jeu)
@@ -2082,7 +2085,7 @@ static bool loadLatestSave(uint32_t now) {
   pet.fatigue = (float)iClamp(ps["fatigue"] | 100,0, 100);
   pet.amour   = (float)iClamp(ps["amour"]   | 60, 0, 100);
   pet.caca    = (float)iClamp(ps["caca"]    | 0,  0, 100);
-  pet.sante   = clampf((float)(ps["sante"] | 80.0f), 0.0f, 100.0f);
+  pet.sante   = (float)iClamp(ps["sante"]   | 80, 0, 100);
 
 #if ENABLE_AUDIO
   audioMode = (AudioMode)iClamp(doc["audioMode"] | (int)AUDIO_TOTAL, (int)AUDIO_OFF, (int)AUDIO_TOTAL);
@@ -2132,7 +2135,7 @@ static bool writeSlotFile(const char* tmpPath, const char* finalPath, const char
   ps["fatigue"] = fToI100(pet.fatigue);
   ps["amour"]   = fToI100(pet.amour);
   ps["caca"]    = fToI100(pet.caca);
-  ps["sante"]   = pet.sante;
+  ps["sante"]   = fToI100(pet.sante);
 
   if (SD.exists(tmpPath)) SD.remove(tmpPath);
   File f = SD.open(tmpPath, FILE_WRITE);
@@ -2271,8 +2274,8 @@ if (phase == PHASE_EGG || phase == PHASE_HATCHING) {
   // IMPORTANT: on sort ici sinon le code plus bas ré-affiche autre chose
 
   } else {
-    snprintf(line, sizeof(line), "Sante:%d  Age:%lum  %s",
-             (int)roundf(pet.sante),
+    snprintf(line, sizeof(line), "Sante:%.1f  Age:%lum  %s",
+             pet.sante,
              (unsigned long)pet.ageMin,
              stageLabel(pet.stage));
     showStatusLine = true;
@@ -3046,14 +3049,16 @@ static void updateHealthTick(uint32_t now) {
   if (!pet.vivant) return;
 
   float ds = 0;
-  if (pet.faim    < 15) ds -= 0.02f;
-  if (pet.soif    < 15) ds -= 0.02f;
-  if (pet.hygiene < 15) ds -= 0.01f;
-  if (pet.humeur  < 10) ds -= 0.01f;
-  if (pet.energie < 10) ds -= 0.01f;
-  if (pet.fatigue < 10) ds -= 0.01f;
-  if (pet.amour   < 10) ds -= 0.005f;
-  if (pet.caca >= 95) ds -= 0.01f;
+  if (pet.faim    < 15) ds -= 2;
+  if (pet.soif    < 15) ds -= 2;
+  if (pet.hygiene < 15) ds -= 1;
+  if (pet.humeur  < 10) ds -= 1;
+  if (pet.energie < 10) ds -= 1;
+  if (pet.fatigue < 10) ds -= 1;
+  if (pet.amour   < 10) ds -= 0.5f;
+  if (pet.caca >= 95) ds -= 1;
+
+  ds *= HEALTH_TICK_MULT;
 
   if (ds < 0) pet.sante = clamp01f(pet.sante + ds);
 
@@ -3097,11 +3102,11 @@ static void updatePetTick(uint32_t now) {
   auto add = [](float &v, float dv){ v = clamp01f(v + dv); };
 
   if (sleeping) {
-    add(pet.faim,    -1.0f);
-    add(pet.soif,    -1.0f);
-    add(pet.hygiene, -0.5f);
+    add(pet.faim,    -1.0f / 25.0f);
+    add(pet.soif,    -1.0f / 25.0f);
+    add(pet.hygiene, -0.5f / 18.0f);
     add(pet.humeur,  +0.2f);
-    add(pet.amour,   -0.2f);
+    add(pet.amour,   -0.2f / 18.0f);
     add(pet.sante,   + 0.1f);
     add(pet.caca,    SLEEP_POOP_D);
   } else {
