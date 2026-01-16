@@ -2274,7 +2274,7 @@ if (phase == PHASE_EGG || phase == PHASE_HATCHING) {
   // IMPORTANT: on sort ici sinon le code plus bas ré-affiche autre chose
 
   } else {
-    snprintf(line, sizeof(line), "Sante:%.1f  Age:%lum  %s",
+    snprintf(line, sizeof(line), "Sante:%.2f  Age:%lum  %s",
              pet.sante,
              (unsigned long)pet.ageMin,
              stageLabel(pet.stage));
