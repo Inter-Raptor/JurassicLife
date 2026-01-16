@@ -296,6 +296,9 @@ static const float AWAKE_ENERGY_D  = -2.0f;
 static const float AWAKE_FATIGUE_D = -2.0f;
 static const float AWAKE_LOVE_D    = -0.5f;
 
+// multiplicateur global de baisse de santé (1.0 = inchangé)
+static const float HEALTH_TICK_MULT = 1.0f;
+
 // caca
 static const float AWAKE_POOP_D    = +1.0f;
 static const float SLEEP_POOP_D    = +0.5f;
@@ -3054,6 +3057,8 @@ static void updateHealthTick(uint32_t now) {
   if (pet.fatigue < 10) ds -= 1;
   if (pet.amour   < 10) ds -= 0.5f;
   if (pet.caca >= 95) ds -= 1;
+
+  ds *= HEALTH_TICK_MULT;
 
   if (ds < 0) pet.sante = clamp01f(pet.sante + ds);
 
